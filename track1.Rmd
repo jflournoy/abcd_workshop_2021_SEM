@@ -1,0 +1,143 @@
+---
+title: '2021 ABCD Workshop: SEM Practical'
+author: "Ethan McCormick"
+date: "7/1/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading Relevant Packages
+```{r packages, message=FALSE}
+packages =  c('lavaan','nlme','ggplot2','patchwork', 
+              'kableExtra', 'psych', 'dplyr', 'tidyr',
+              'semPlot')
+if (length(setdiff(packages, rownames(installed.packages()))) > 0) {
+  install.packages(setdiff(packages, rownames(installed.packages())), 
+                   repos = "http://cran.us.r-project.org")
+}
+invisible(lapply(packages, library, character.only = TRUE))
+```
+
+## Read In Data
+```{r}
+ABCD = read.csv('abcd_sem.csv')
+str(ABCD)
+```
+
+These data have been synthesized from other data and then addition simulations were performed to make the data behave. The original data labels were changed for use in the workshop. The relevant variables include:
+
+`id`: unique identifier  
+`female`: self-identified sex (binary: 0 = male, 1 = female)  
+`advers`: did the individual experience early-childhood adversity (binary: 0 = no, 1 = yes)  
+`VS`: measures of ventral striatum response during reward anticipation  
+`EXT`: measures of parent-reported externalizing behavior  
+
+## Descriptives
+```{r descriptives, warning=FALSE}
+describe(ABCD[,2:ncol(ABCD)], fast = TRUE) %>% 
+  kbl() %>% 
+  kable_styling(full_width = F)
+
+
+# Density by Wave: VS Activation
+ggplot(ABCD %>% 
+         pivot_longer(cols=starts_with('VS'),
+                      names_to='wave',
+                      values_to='VS'),
+       aes(x=VS, group=wave, fill=wave)) +
+  geom_density(alpha=.4) +
+  labs(title = 'VS Activation by Wave', 
+       x='Beta', 
+       y = 'Density', 
+       fill='Wave:') +
+  scale_fill_discrete(labels = c('1','2','3','4','5')) +
+  theme(legend.position='bottom')
+
+
+# VS Activation Change over Time: By ID
+ggplot(ABCD %>% 
+         pivot_longer(cols=starts_with('VS'),
+                      names_to='wave',
+                      values_to='VS') %>%
+         filter(id %in% sample(unique(ABCD$id), 100)),
+       aes(x=wave, y=VS, group=id)) +
+  geom_line() + 
+  labs(title = 'Changes in VS Activation', 
+       x='Wave', 
+       y = 'Beta') +
+  scale_x_discrete(labels = c('1','2','3','4','5'))
+
+
+# Density by Wave: Externalizing Behavior
+ggplot(ABCD %>% 
+         pivot_longer(cols=starts_with('EXT'),
+                      names_to='wave',
+                      values_to='EXT'),
+       aes(x=EXT, group=wave, fill=wave)) +
+  geom_density(alpha=.4) +
+  labs(title = 'Externalizing Behavior by Wave', 
+       x='Beta', 
+       y = 'Density', 
+       fill='Wave:') +
+  scale_fill_discrete(labels = c('1','2','3','4','5')) +
+  theme(legend.position='bottom')
+
+
+# Externalizing Behavior Change over Time: By ID
+ggplot(ABCD %>% 
+         pivot_longer(cols=starts_with('EXT'),
+                      names_to='wave',
+                      values_to='EXT') %>%
+         filter(id %in% sample(unique(ABCD$id), 100)),
+       aes(x=wave, y=EXT, group=id)) +
+  geom_line() + 
+  labs(title = 'Changes in Externalizing', 
+       x='Wave', 
+       y = 'Externalizing Behavior') +
+  scale_x_discrete(labels = c('1','2','3','4','5'))
+```
+
+# Residualized change v difference scores
+
+```{r}
+ABCD_l <- tidyr::pivot_longer(ABCD, names_to = 'key', values_to = 'value', tidyr::matches('^(VS|EXT)')) %>%
+  tidyr::extract(col = key, into = c('var', 'wave'), regex = '(\\w+)\\.(\\d+)') %>%
+  tidyr::pivot_wider(names_from = 'var', values_from = 'value') %>%
+  dplyr::group_by(id) %>%
+  dplyr::mutate(across(c(wave, EXT, VS), lag, .names = '{.col}_lag'))
+
+#residualized change
+#get the residual for the regression for each wave on the one before it
+ABCD_l_resid <- dplyr::group_by(filter(ABCD_l, !is.na(wave_lag)), wave, wave_lag) %>%
+  mutate(VS_resid = resid(lm(VS ~ 1 + VS_lag, na.action = 'na.exclude')),
+         EXT_resid = resid(lm(EXT ~ 1 + EXT_lag, na.action = 'na.exclude')))
+
+#difference scores
+#just take the difference between the measure at wave T and wave T-1
+ABCD_l_resid_diff <- dplyr::group_by(ABCD_l_resid, wave, wave_lag, id) %>%
+  mutate(VS_diff = VS - VS_lag,
+         EXT_diff = EXT - EXT_lag)
+```
+
+What's the correlation of these?
+
+```{r}
+select(ungroup(ABCD_l_resid_diff), id, wave, matches('(VS|EXT)_(resid|diff)')) %>%
+  pivot_longer(cols = c(-id, -wave)) %>%
+  extract(name, c('var', 'stat'), '(\\w+)_(\\w+)') %>%
+  pivot_wider(names_from = 'stat', values_from = 'value') %>%
+  ggplot(aes(x = diff, y = resid)) + 
+  # geom_point(size = .5, alpha = .05) + 
+  geom_bin2d() + 
+  geom_abline(intercept = 0, slope = 1) + 
+  geom_line(stat = 'smooth', color = '#0099ff', size = 1) + 
+  facet_grid(~var) + 
+  scale_fill_gradient(low = '#660000', high = '#FFFF00') + 
+  theme_minimal() + 
+  coord_cartesian(x = c(-5, 5), y = c(-5, 5))
+```
+
+

@@ -1,0 +1,682 @@
+---
+title: '2021 ABCD Workshop: SEM Practical'
+author: "Ethan McCormick"
+date: "7/1/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading Relevant Packages
+```{r packages, message=FALSE}
+packages =  c('lavaan','nlme','ggplot2','patchwork', 
+              'kableExtra', 'psych', 'dplyr', 'tidyr',
+              'semPlot')
+if (length(setdiff(packages, rownames(installed.packages()))) > 0) {
+  install.packages(setdiff(packages, rownames(installed.packages())), 
+                   repos = "http://cran.us.r-project.org")
+}
+invisible(lapply(packages, library, character.only = TRUE))
+```
+
+## Read In Data
+```{r}
+ABCD = read.csv('abcd_sem.csv')
+str(ABCD)
+```
+
+These data have been synthesized from other data and then addition simulations were performed to make the data behave. The original data labels were changed for use in the workshop. The relevant variables include:
+
+`id`: unique identifier  
+`female`: self-identified sex (binary: 0 = male, 1 = female)  
+`advers`: did the individual experience early-childhood adversity (binary: 0 = no, 1 = yes)  
+`VS`: measures of ventral striatum response during reward anticipation  
+`EXT`: measures of parent-reported externalizing behavior  
+
+## Descriptives
+```{r descriptives, warning=FALSE}
+describe(ABCD[,2:ncol(ABCD)], fast = TRUE) %>% 
+  kbl() %>% 
+  kable_styling(full_width = F)
+
+
+# Density by Wave: VS Activation
+ggplot(ABCD %>% 
+         pivot_longer(cols=starts_with('VS'),
+                      names_to='wave',
+                      values_to='VS'),
+       aes(x=VS, group=wave, fill=wave)) +
+  geom_density(alpha=.4) +
+  labs(title = 'VS Activation by Wave', 
+       x='Beta', 
+       y = 'Density', 
+       fill='Wave:') +
+  scale_fill_discrete(labels = c('1','2','3','4','5')) +
+  theme(legend.position='bottom')
+
+
+# VS Activation Change over Time: By ID
+ggplot(ABCD %>% 
+         pivot_longer(cols=starts_with('VS'),
+                      names_to='wave',
+                      values_to='VS') %>%
+         filter(id %in% sample(unique(ABCD$id), 100)),
+       aes(x=wave, y=VS, group=id)) +
+  geom_line() + 
+  labs(title = 'Changes in VS Activation', 
+       x='Wave', 
+       y = 'Beta') +
+  scale_x_discrete(labels = c('1','2','3','4','5'))
+
+
+# Density by Wave: Externalizing Behavior
+ggplot(ABCD %>% 
+         pivot_longer(cols=starts_with('EXT'),
+                      names_to='wave',
+                      values_to='EXT'),
+       aes(x=EXT, group=wave, fill=wave)) +
+  geom_density(alpha=.4) +
+  labs(title = 'Externalizing Behavior by Wave', 
+       x='Beta', 
+       y = 'Density', 
+       fill='Wave:') +
+  scale_fill_discrete(labels = c('1','2','3','4','5')) +
+  theme(legend.position='bottom')
+
+
+# Externalizing Behavior Change over Time: By ID
+ggplot(ABCD %>% 
+         pivot_longer(cols=starts_with('EXT'),
+                      names_to='wave',
+                      values_to='EXT') %>%
+         filter(id %in% sample(unique(ABCD$id), 100)),
+       aes(x=wave, y=EXT, group=id)) +
+  geom_line() + 
+  labs(title = 'Changes in Externalizing', 
+       x='Wave', 
+       y = 'Externalizing Behavior') +
+  scale_x_discrete(labels = c('1','2','3','4','5'))
+```
+
+For fitting SEMs in R, [*lavaan*](https://lavaan.ugent.be/) is the game in town. Some quick syntax points. The `~` operator represents a regression (`y ~ x1 + x2` etc), same as in the regression packages syntax. Co-variances are represented by the `~~` operator and co-variance with the same variable is the variance (e.g., `y2 ~~ y2`). Later, we will see latent factors (e.g., `int` and `slp`) which are defined by the repeated measures of the outcome variable using the `=~` operator which means "measured by". The `=~` will tell *lavaan* to estimate the variable on the left as a latent variable. You fixed parameters (e.g., factor loadings) by pre-multiplying the repeated measure (e.g., `0*y1`) or if you don't pre-multiply, they get freely estimated. Additionally you can add in equality constraints by pre-multiply by some label (e.g., `y ~ a*x1`) and re-using the same label on some other parameter (e.g., `y ~ a*x1`; here both regression coefficients would be estimated exactly equal). For *lavaan*, you first save the model syntax as a string into an object and then use the a function (e.g., `growth()` or `sem()`) to estimate the model. To specify how missing data are handled, we can use  `missing = 'listwise'` to choose to delete individuals with missing data, but a more common approach is to use `missing = ML` to use full information maximum likelihood (FIML).
+
+## Autoregressive Cross-Lag Panel Model
+```{r ARCL, warning=FALSE}
+ARCL = '# Regressions for VS Activation
+        VS.2 ~ VS.1 + EXT.1
+        VS.3 ~ VS.2 + EXT.2
+        VS.4 ~ VS.3 + EXT.3
+        VS.5 ~ VS.4 + EXT.4
+        
+        # Regressions for Externalizing Behavior
+        EXT.2 ~ EXT.1 + VS.1
+        EXT.3 ~ EXT.2 + VS.2
+        EXT.4 ~ EXT.3 + VS.3
+        EXT.5 ~ EXT.4 + VS.4
+        
+        # Within-Time (Residual) Correlations
+        VS.1 ~~ EXT.1
+        VS.2 ~~ EXT.2
+        VS.3 ~~ EXT.3
+        VS.4 ~~ EXT.4
+        VS.5 ~~ EXT.5'
+
+ARCL.fit = sem(model=ARCL, data=ABCD, meanstructure=TRUE, missing='ML')
+summary(ARCL.fit)
+
+semPaths(ARCL.fit, layout='spring', intercepts=TRUE)
+semPaths(ARCL.fit, layout='spring', intercepts=FALSE)
+```
+
+## Random-Intercept Autoregressive Cross-Lag Panel Model
+
+We can use the riclpmr pacakge to generate code for this model using a list of variable names grouped by construct.
+
+See also this [blog post](https://johnflournoy.science/2017/10/20/riclpm-lavaan-demo/).
+
+```{r RI-ARCL, warning=FALSE}
+#https://johnflournoy.science/riclpmr/
+devtools::install_github('jflournoy/riclpmr')
+library(riclpmr)
+
+variable_groups <- list(
+  EXT = c('EXT.1','EXT.2', 'EXT.3', 'EXT.4', 'EXT.5'),
+  VS =  c('VS.1','VS.2', 'VS.3', 'VS.4', 'VS.5'))
+RIARCLPM <- riclpmr::riclpm_text(var_groups = variable_groups, constrain_over_waves = FALSE)
+
+#check the model code
+cat(RIARCLPM)
+
+RIARCLPM.fit <- riclpmr::lavriclpm(RIARCLPM, data = ABCD)
+summary(RIARCLPM.fit)
+```
+
+## Unconditional Linear Latent Growth Curve Model
+```{r uLCM linear, warning=FALSE}
+# Intercept-Only Model: VS Activation
+LCM.VSint = 'int =~ 1*VS.1 + 1*VS.2 + 1*VS.3 + 1*VS.4 + 1*VS.5'
+
+LCM.VSint.fit = growth(LCM.VSint, data=ABCD, missing='ML')
+summary(LCM.VSint.fit)
+semPaths(LCM.VSint.fit, intercepts=FALSE)
+
+
+# Linear Slope: VS Activation (fixed effect of time)
+LCM.VSlin.fixed = 'int =~ 1*VS.1 + 1*VS.2 + 1*VS.3 + 1*VS.4 + 1*VS.5
+             slp =~ 0*VS.1 + 1*VS.2 + 2*VS.3 + 3*VS.4 + 4*VS.5
+
+             slp ~~ 0*slp'
+
+LCM.VSlin.fixed.fit = growth(LCM.VSlin.fixed, data=ABCD, missing='ML')
+summary(LCM.VSlin.fixed.fit)
+
+
+# Linear Slope: VS Activation (random effect of time)
+LCM.VSlin = 'int =~ 1*VS.1 + 1*VS.2 + 1*VS.3 + 1*VS.4 + 1*VS.5
+             slp =~ 0*VS.1 + 1*VS.2 + 2*VS.3 + 3*VS.4 + 4*VS.5'
+
+LCM.VSlin.fit = growth(LCM.VSlin, data=ABCD, missing='ML')
+summary(LCM.VSlin.fit)
+semPaths(LCM.VSlin.fit, intercepts=FALSE, edge.color='black')
+
+
+# Linear Slope: VS Activation (alternative time coding)
+LCM.VSlin2 = 'int =~ 1*VS.1 + 1*VS.2 + 1*VS.3 + 1*VS.4 + 1*VS.5
+              slp =~ -4*VS.1 + -3*VS.2 + -2*VS.3 + -1*VS.4 + 0*VS.5'
+
+LCM.VSlin2.fit = growth(LCM.VSlin2, data=ABCD, missing='ML')
+summary(LCM.VSlin2.fit)
+
+
+# Linear Slope: Externalizing Behavior
+LCM.VSlin = 'int =~ 1*EXT.1 + 1*EXT.2 + 1*EXT.3 + 1*EXT.4 + 1*EXT.5
+             slp =~ 0*EXT.1 + 1*EXT.2 + 2*EXT.3 + 3*EXT.4 + 4*EXT.5'
+
+LCM.VSlin.fit = growth(LCM.VSlin, data=ABCD, missing='ML')
+summary(LCM.VSlin.fit)
+```
+
+## Unconditional Quadratic Latent Growth Curve Model
+```{r uLCM quadratic}
+# Quadratic Effect: VS Activation
+LCM.VSqud = 'int =~ 1*VS.1 + 1*VS.2 + 1*VS.3 + 1*VS.4 + 1*VS.5
+             slp =~ 0*VS.1 + 1*VS.2 + 2*VS.3 + 3*VS.4 + 4*VS.5
+             qud =~ 0*VS.1 + 1*VS.2 + 4*VS.3 + 9*VS.4 + 16*VS.5'
+
+LCM.VSqud.fit = growth(LCM.VSqud, data=ABCD, missing='ML')
+summary(LCM.VSqud.fit)
+semPaths(LCM.VSqud.fit, intercepts=FALSE, edge.color='black')
+
+# Quadratic Effect: Externalizing Behavior
+LCM.EXTqud = 'int =~ 1*EXT.1 + 1*EXT.2 + 1*EXT.3 + 1*EXT.4 + 1*EXT.5
+              slp =~ 0*EXT.1 + 1*EXT.2 + 2*EXT.3 + 3*EXT.4 + 4*EXT.5
+              qud =~ 0*EXT.1 + 1*EXT.2 + 4*EXT.3 + 9*EXT.4 + 16*EXT.5'
+
+LCM.EXTqud.fit = growth(LCM.EXTqud, data=ABCD, missing='ML')
+summary(LCM.EXTqud.fit)
+
+LCM.EXTqud2 = 'int =~ 1*EXT.1 + 1*EXT.2 + 1*EXT.3 + 1*EXT.4 + 1*EXT.5
+               slp =~ 0*EXT.1 + 1*EXT.2 + 2*EXT.3 + 3*EXT.4 + 4*EXT.5
+               qud =~ 0*EXT.1 + 1*EXT.2 + 4*EXT.3 + 9*EXT.4 + 16*EXT.5
+
+               qud ~~ 0*qud
+               qud ~~ 0*int + 0*slp'
+
+LCM.EXTqud2.fit = growth(LCM.EXTqud2, data=ABCD, missing='ML')
+summary(LCM.EXTqud2.fit)
+```
+
+
+## Unconditional Piecewise Latent Growth Curve Model
+```{r uLCM piecewise}
+# Piecewise Linear Effect: VS Activation
+LCM.VSpw = 'int =~ 1*VS.1 + 1*VS.2 + 1*VS.3 + 1*VS.4 + 1*VS.5
+            pw1 =~ 0*VS.1 + 1*VS.2 + 2*VS.3 + 3*VS.4 + 3*VS.5
+            pw2 =~ 0*VS.1 + 0*VS.2 + 0*VS.3 + 1*VS.4 + 2*VS.5'
+
+LCM.VSpw.fit = growth(LCM.VSpw, data=ABCD, missing='ML')
+summary(LCM.VSpw.fit)
+```
+
+
+## Unconditional Latent Basis Growth Curve Model
+```{r uLCM latent basis}
+# Latent Basis Effect: VS Activation
+LCM.VSfl = 'int =~ 1*VS.1 + 1*VS.2 + 1*VS.3 + 1*VS.4 + 1*VS.5
+            fl =~ 0*VS.1 + 1*VS.2 + VS.3 + VS.4 + VS.5'
+
+LCM.VSfl.fit = growth(LCM.VSfl, data=ABCD, missing='ML')
+summary(LCM.VSfl.fit)
+```
+
+
+## Conditional Latent Growth Curve Model: TICs
+```{r cLCM TIC}
+# Conditional TIC Model
+LCM.TIC = 'int =~ 1*VS.1 + 1*VS.2 + 1*VS.3 + 1*VS.4 + 1*VS.5
+           slp =~ 0*VS.1 + 1*VS.2 + 2*VS.3 + 3*VS.4 + 4*VS.5
+
+           int ~ female + advers
+           slp ~ female + advers'
+
+LCM.TIC.fit = growth(LCM.TIC, data=ABCD, missing='ML')
+summary(LCM.TIC.fit)
+
+semPaths(LCM.TIC.fit, intercepts=FALSE, edge.color='black')
+
+# Conditional TIC Model with Explicit Exogenous Covariance
+LCM.TIC = 'int =~ 1*VS.1 + 1*VS.2 + 1*VS.3 + 1*VS.4 + 1*VS.5
+           slp =~ 0*VS.1 + 1*VS.2 + 2*VS.3 + 3*VS.4 + 4*VS.5
+
+           int ~ female + advers
+           slp ~ female + advers
+
+           female ~~ advers'
+
+LCM.TIC.fit = growth(LCM.TIC, data=ABCD, missing='ML')
+summary(LCM.TIC.fit)
+```
+
+
+## Conditional Latent Growth Curve Model: TVCs
+```{r cLCM TVC}
+# Conditional TVC Model
+LCM.TVC1 = 'int =~ 1*VS.1 + 1*VS.2 + 1*VS.3 + 1*VS.4 + 1*VS.5
+            slp =~ 0*VS.1 + 1*VS.2 + 2*VS.3 + 3*VS.4 + 4*VS.5
+
+            VS.1 ~ EXT.1
+            VS.2 ~ EXT.2
+            VS.3 ~ EXT.3
+            VS.4 ~ EXT.4
+            VS.5 ~ EXT.5
+
+            int ~~ EXT.1 + EXT.2 + EXT.3 + EXT.4 + EXT.5
+            slp ~~ EXT.1 + EXT.2 + EXT.3 + EXT.4 + EXT.5'
+
+LCM.TVC1.fit = growth(LCM.TVC1, data=ABCD, missing='ML')
+summary(LCM.TVC1.fit)
+semPaths(LCM.TVC1.fit, intercepts=FALSE, edge.color='black')
+
+# Conditional TVC Model with Equality Constraints
+LCM.TVC2 = 'int =~ 1*VS.1 + 1*VS.2 + 1*VS.3 + 1*VS.4 + 1*VS.5
+            slp =~ 0*VS.1 + 1*VS.2 + 2*VS.3 + 3*VS.4 + 4*VS.5
+
+            VS.1 ~ a*EXT.1
+            VS.2 ~ a*EXT.2
+            VS.3 ~ a*EXT.3
+            VS.4 ~ a*EXT.4
+            VS.5 ~ a*EXT.5
+
+            int ~~ EXT.1 + EXT.2 + EXT.3 + EXT.4 + EXT.5
+            slp ~~ EXT.1 + EXT.2 + EXT.3 + EXT.4 + EXT.5'
+
+LCM.TVC2.fit = growth(LCM.TVC2, data=ABCD, missing='ML')
+summary(LCM.TVC2.fit)
+semPaths(LCM.TVC2.fit, intercepts=FALSE, edge.color='black')
+```
+
+
+## Multivariate Latent Curve Model
+```{r mLCM}
+mLCM =     'VS.int =~ 1*VS.1 + 1*VS.2 + 1*VS.3 + 1*VS.4 + 1*VS.5
+            VS.slp =~ 0*VS.1 + 1*VS.2 + 2*VS.3 + 3*VS.4 + 4*VS.5
+
+            EXT.int =~ 1*EXT.1 + 1*EXT.2 + 1*EXT.3 + 1*EXT.4 + 1*EXT.5
+            EXT.slp =~ 0*EXT.1 + 1*EXT.2 + 2*EXT.3 + 3*EXT.4 + 4*EXT.5
+
+            VS.1 ~~ EXT.1
+            VS.2 ~~ EXT.2
+            VS.3 ~~ EXT.3
+            VS.4 ~~ EXT.4
+            VS.5 ~~ EXT.5
+            
+            VS.int ~~ VS.slp + EXT.int + EXT.slp
+            VS.slp ~~ EXT.int + EXT.slp
+            EXT.int ~~ EXT.slp'
+mLCM.fit = growth(mLCM, data=ABCD, missing='ML')
+summary(mLCM.fit)
+semPaths(mLCM.fit, intercepts=FALSE, edge.color='black')
+```
+
+
+## Multivariate Latent Curve Model with Structured Residuals
+```{r mLCM-SR}
+mLCMSR =   '# Define the Latent Factors
+            VS.int =~ 1*VS.1 + 1*VS.2 + 1*VS.3 + 1*VS.4 + 1*VS.5
+            VS.slp =~ 0*VS.1 + 1*VS.2 + 2*VS.3 + 3*VS.4 + 4*VS.5
+
+            EXT.int =~ 1*EXT.1 + 1*EXT.2 + 1*EXT.3 + 1*EXT.4 + 1*EXT.5
+            EXT.slp =~ 0*EXT.1 + 1*EXT.2 + 2*EXT.3 + 3*EXT.4 + 4*EXT.5
+
+            # Factor Covariances
+            VS.int ~~ VS.slp + EXT.int + EXT.slp
+            VS.slp ~~ EXT.int + EXT.slp
+            EXT.int ~~ EXT.slp
+            
+            # Define Phantom Variables
+            VS.1 ~~ 0*VS.1; srVS.1 =~ 1*VS.1; srVS.1 ~ 0; srVS.1 ~~ srVS.1
+            VS.2 ~~ 0*VS.2; srVS.2 =~ 1*VS.2; srVS.2 ~ 0; srVS.2 ~~ srVS.2
+            VS.3 ~~ 0*VS.3; srVS.3 =~ 1*VS.3; srVS.3 ~ 0; srVS.3 ~~ srVS.3
+            VS.4 ~~ 0*VS.4; srVS.4 =~ 1*VS.4; srVS.4 ~ 0; srVS.4 ~~ srVS.4
+            VS.5 ~~ 0*VS.5; srVS.5 =~ 1*VS.5; srVS.5 ~ 0; srVS.5 ~~ srVS.5
+            
+            EXT.1 ~~ 0*EXT.1; srEXT.1 =~ 1*EXT.1; srEXT.1 ~ 0; srEXT.1 ~~ srEXT.1
+            EXT.2 ~~ 0*EXT.2; srEXT.2 =~ 1*EXT.2; srEXT.2 ~ 0; srEXT.2 ~~ srEXT.2
+            EXT.3 ~~ 0*EXT.3; srEXT.3 =~ 1*EXT.3; srEXT.3 ~ 0; srEXT.3 ~~ srEXT.3
+            EXT.4 ~~ 0*EXT.4; srEXT.4 =~ 1*EXT.4; srEXT.4 ~ 0; srEXT.4 ~~ srEXT.4
+            EXT.5 ~~ 0*EXT.5; srEXT.5 =~ 1*EXT.5; srEXT.5 ~ 0; srEXT.5 ~~ srEXT.5
+            
+            # Structured Residuals Regressions + Covariances
+            srVS.2 ~ a*srVS.1 + b*srEXT.1
+            srVS.3 ~ a*srVS.2 + b*srEXT.2
+            srVS.4 ~ a*srVS.3 + b*srEXT.3
+            srVS.5 ~ a*srVS.4 + b*srEXT.4
+            
+            srEXT.2 ~ c*srEXT.1 + d*srVS.1
+            srEXT.3 ~ c*srEXT.2 + d*srVS.2
+            srEXT.4 ~ c*srEXT.3 + d*srVS.3
+            srEXT.5 ~ c*srEXT.4 + d*srVS.4
+            
+            srVS.1 ~~ srEXT.1
+            srVS.2 ~~ srEXT.2
+            srVS.3 ~~ srEXT.3
+            srVS.4 ~~ srEXT.4
+            srVS.5 ~~ srEXT.5
+            
+            # Uncouple 1st SRs from Growth Factors
+            VS.int ~~ 0*srVS.1 + 0*srEXT.1
+            VS.slp ~~ 0*srVS.1 + 0*srEXT.1
+            EXT.int ~~ 0*srVS.1 + 0*srEXT.1
+            EXT.slp ~~ 0*srVS.1 + 0*srEXT.1
+'
+mLCMSR.fit = growth(mLCMSR, data=ABCD, missing='ML')
+summary(mLCMSR.fit)
+
+semPaths(mLCMSR.fit, layout='spring', intercepts = F, residuals = F)
+```
+
+
+## Two-Timepoint Latent Change Score
+```{r 2TP LCS}
+# FIML 2TP LCS Model
+LCS1 = '# Set Regression Path to 1
+        VS.2 ~ 1*VS.1
+        
+        # Define Change Latent Variable
+        dVS.21 =~ 1*VS.2
+        dVS.21 ~ 1
+        
+        # Estimate Intercept and Variance of V.1
+        VS.1 ~ 1
+        VS.1 ~~ VS.1
+        
+        # Constraint Intercept and Variance of V.2 to 0
+        VS.2 ~ 0
+        VS.2 ~~ 0*VS.2
+'
+LCS1.fit = sem(LCS1, data=ABCD, missing='ML')
+summary(LCS1.fit)
+
+# Complete Case 2TP LCS Model
+LCS1.fit2 = sem(LCS1, data=ABCD, missing='listwise')
+summary(LCS1.fit2)
+
+# Paired Samples T-Test
+t.test(ABCD$VS.1, ABCD$VS.2, paired=TRUE)
+describe(ABCD[,c('VS.1','VS.2')])
+6.248 + .188
+
+# Proportional Change LCS
+LCS2 = '# Set Regression Path to 1
+        VS.2 ~ 1*VS.1
+        
+        # Define Change Latent Variable
+        dVS.21 =~ 1*VS.2
+        dVS.21 ~ 1
+        
+        # Regress Change on Initial Status
+        dVS.21 ~ VS.1
+        
+        # Estimate Intercept and Variance of V.1
+        VS.1 ~ 1
+        VS.1 ~~ VS.1
+        
+        # Constraint Intercept and Variance of V.2 to 0
+        VS.2 ~ 0
+        VS.2 ~~ 0*VS.2
+'
+LCS2.fit = sem(LCS2, data=ABCD, missing='ML')
+summary(LCS2.fit)
+```
+
+
+## Latent Change Score Trajectory Model
+```{r LCS Trajectories}
+# LCS Trajectory Model
+LCSt = '# Define Phantom Variables
+        pVS.1 =~ 1*VS.1; VS.1 ~ 0; VS.1 ~~ VS.1; pVS.1 ~~ 0*pVS.1
+        pVS.2 =~ 1*VS.2; VS.2 ~ 0; VS.2 ~~ VS.2; pVS.2 ~~ 0*pVS.2
+        pVS.3 =~ 1*VS.3; VS.3 ~ 0; VS.3 ~~ VS.3; pVS.3 ~~ 0*pVS.3
+        pVS.4 =~ 1*VS.4; VS.4 ~ 0; VS.4 ~~ VS.4; pVS.4 ~~ 0*pVS.4
+        pVS.5 =~ 1*VS.5; VS.5 ~ 0; VS.5 ~~ VS.5; pVS.5 ~~ 0*pVS.5
+        
+        # Regressions Between Adjacent Observations
+        pVS.2 ~ 1*pVS.1
+        pVS.3 ~ 1*pVS.2
+        pVS.4 ~ 1*pVS.3
+        pVS.5 ~ 1*pVS.4
+        
+        # Define Change Latent Variables
+        dVS.21 =~ 1*pVS.2; dVS.21 ~~ 0*dVS.21
+        dVS.32 =~ 1*pVS.3; dVS.32 ~~ 0*dVS.32
+        dVS.43 =~ 1*pVS.4; dVS.43 ~~ 0*dVS.43
+        dVS.54 =~ 1*pVS.5; dVS.54 ~~ 0*dVS.54
+        
+        # Define Intercept and Slope
+        int =~ 1*pVS.1
+        slp =~ 1*dVS.21 + 1*dVS.32 + 1*dVS.43 + 1*dVS.54
+        
+        int ~ 1
+        slp ~ 1
+        int ~~ int + slp
+        slp ~~ slp
+'
+LCSt.fit = sem(LCSt, data=ABCD, missing='ML')
+summary(LCSt.fit)
+
+# Identical LCM Model
+summary(LCM.VSlin.fit)
+
+# Proportional Change LCS Trajectory Model
+LCSpt = '# Define Phantom Variables
+        pVS.1 =~ 1*VS.1; VS.1 ~ 0; VS.1 ~~ VS.1; pVS.1 ~~ 0*pVS.1
+        pVS.2 =~ 1*VS.2; VS.2 ~ 0; VS.2 ~~ VS.2; pVS.2 ~~ 0*pVS.2
+        pVS.3 =~ 1*VS.3; VS.3 ~ 0; VS.3 ~~ VS.3; pVS.3 ~~ 0*pVS.3
+        pVS.4 =~ 1*VS.4; VS.4 ~ 0; VS.4 ~~ VS.4; pVS.4 ~~ 0*pVS.4
+        pVS.5 =~ 1*VS.5; VS.5 ~ 0; VS.5 ~~ VS.5; pVS.5 ~~ 0*pVS.5
+        
+        # Regressions Between Adjacent Observations
+        pVS.2 ~ 1*pVS.1
+        pVS.3 ~ 1*pVS.2
+        pVS.4 ~ 1*pVS.3
+        pVS.5 ~ 1*pVS.4
+        
+        # Define Change Latent Variables
+        dVS.21 =~ 1*pVS.2; dVS.21 ~~ 0*dVS.21
+        dVS.32 =~ 1*pVS.3; dVS.32 ~~ 0*dVS.32
+        dVS.43 =~ 1*pVS.4; dVS.43 ~~ 0*dVS.43
+        dVS.54 =~ 1*pVS.5; dVS.54 ~~ 0*dVS.54
+        
+        # Define Proportional Regressions
+        dVS.21 ~ beta*pVS.1
+        dVS.32 ~ beta*pVS.2
+        dVS.43 ~ beta*pVS.3
+        dVS.54 ~ beta*pVS.4
+        
+        # Define Intercept and Slope
+        int =~ 1*pVS.1
+        slp =~ 1*dVS.21 + 1*dVS.32 + 1*dVS.43 + 1*dVS.54
+        
+        int ~ 1
+        slp ~ 1
+        int ~~ int + slp
+        slp ~~ slp
+'
+LCSpt.fit = sem(LCSpt, data=ABCD, missing='ML')
+summary(LCSpt.fit)
+```
+
+
+## Bivariate Latent Change Score Model
+```{r Bivar LCS}
+# Bivariate Within-Construct Proportional LCS Trajectory Model
+bLCSt = '# Define Phantom Variables
+         pVS.1 =~ 1*VS.1; VS.1 ~ 0; VS.1 ~~ VS.1; pVS.1 ~~ 0*pVS.1
+         pVS.2 =~ 1*VS.2; VS.2 ~ 0; VS.2 ~~ VS.2; pVS.2 ~~ 0*pVS.2
+         pVS.3 =~ 1*VS.3; VS.3 ~ 0; VS.3 ~~ VS.3; pVS.3 ~~ 0*pVS.3
+         pVS.4 =~ 1*VS.4; VS.4 ~ 0; VS.4 ~~ VS.4; pVS.4 ~~ 0*pVS.4
+         pVS.5 =~ 1*VS.5; VS.5 ~ 0; VS.5 ~~ VS.5; pVS.5 ~~ 0*pVS.5
+         
+         pEXT.1 =~ 1*EXT.1; EXT.1 ~ 0; EXT.1 ~~ EXT.1; pEXT.1 ~~ 0*pEXT.1
+         pEXT.2 =~ 1*EXT.2; EXT.2 ~ 0; EXT.2 ~~ EXT.2; pEXT.2 ~~ 0*pEXT.2
+         pEXT.3 =~ 1*EXT.3; EXT.3 ~ 0; EXT.3 ~~ EXT.3; pEXT.3 ~~ 0*pEXT.3
+         pEXT.4 =~ 1*EXT.4; EXT.4 ~ 0; EXT.4 ~~ EXT.4; pEXT.4 ~~ 0*pEXT.4
+         pEXT.5 =~ 1*EXT.5; EXT.5 ~ 0; EXT.5 ~~ EXT.5; pEXT.5 ~~ 0*pEXT.5
+         
+         # Residual Cross-Construct Covariances
+         VS.1 ~~ EXT.1
+         VS.2 ~~ EXT.2
+         VS.3 ~~ EXT.3
+         VS.4 ~~ EXT.4
+         VS.5 ~~ EXT.5
+        
+         # Regressions Between Adjacent Observations
+         pVS.2 ~ 1*pVS.1
+         pVS.3 ~ 1*pVS.2
+         pVS.4 ~ 1*pVS.3
+         pVS.5 ~ 1*pVS.4
+         
+         pEXT.2 ~ 1*pEXT.1
+         pEXT.3 ~ 1*pEXT.2
+         pEXT.4 ~ 1*pEXT.3
+         pEXT.5 ~ 1*pEXT.4
+        
+         # Define Change Latent Variables
+         dVS.21 =~ 1*pVS.2; dVS.21 ~~ 0*dVS.21
+         dVS.32 =~ 1*pVS.3; dVS.32 ~~ 0*dVS.32
+         dVS.43 =~ 1*pVS.4; dVS.43 ~~ 0*dVS.43
+         dVS.54 =~ 1*pVS.5; dVS.54 ~~ 0*dVS.54
+         
+         dEXT.21 =~ 1*pEXT.2; dEXT.21 ~~ 0*dEXT.21
+         dEXT.32 =~ 1*pEXT.3; dEXT.32 ~~ 0*dEXT.32
+         dEXT.43 =~ 1*pEXT.4; dEXT.43 ~~ 0*dEXT.43
+         dEXT.54 =~ 1*pEXT.5; dEXT.54 ~~ 0*dEXT.54
+         
+         # Define Within-Construct Proportional Regressions
+         dVS.21 ~ beta.V*pVS.1
+         dVS.32 ~ beta.V*pVS.2
+         dVS.43 ~ beta.V*pVS.3
+         dVS.54 ~ beta.V*pVS.4
+         
+         dEXT.21 ~ beta.E*pEXT.1
+         dEXT.32 ~ beta.E*pEXT.2
+         dEXT.43 ~ beta.E*pEXT.3
+         dEXT.54 ~ beta.E*pEXT.4
+        
+         # Define Intercept and Slope
+         int.V =~ 1*pVS.1
+         slp.V =~ 1*dVS.21 + 1*dVS.32 + 1*dVS.43 + 1*dVS.54
+        
+         int.V ~ 1
+         slp.V ~ 1
+         int.V ~~ int.V + slp.V + int.E + slp.E
+         slp.V ~~ slp.V + int.E + slp.E
+         
+         int.E =~ 1*pEXT.1
+         slp.E =~ 1*dEXT.21 + 1*dEXT.32 + 1*dEXT.43 + 1*dEXT.54
+        
+         int.E ~ 1
+         slp.E ~ 1
+         int.E ~~ int.E + slp.E
+         slp.E ~~ slp.E
+'
+bLCSt.fit = sem(bLCSt, data=ABCD, missing='ML')
+summary(bLCSt.fit)
+
+# Bivariate Dual Change LCS Trajectory Model
+bLCSpt = '# Define Phantom Variables
+          pVS.1 =~ 1*VS.1; VS.1 ~ 0; VS.1 ~~ VS.1; pVS.1 ~~ 0*pVS.1
+          pVS.2 =~ 1*VS.2; VS.2 ~ 0; VS.2 ~~ VS.2; pVS.2 ~~ 0*pVS.2
+          pVS.3 =~ 1*VS.3; VS.3 ~ 0; VS.3 ~~ VS.3; pVS.3 ~~ 0*pVS.3
+          pVS.4 =~ 1*VS.4; VS.4 ~ 0; VS.4 ~~ VS.4; pVS.4 ~~ 0*pVS.4
+          pVS.5 =~ 1*VS.5; VS.5 ~ 0; VS.5 ~~ VS.5; pVS.5 ~~ 0*pVS.5
+         
+          pEXT.1 =~ 1*EXT.1; EXT.1 ~ 0; EXT.1 ~~ EXT.1; pEXT.1 ~~ 0*pEXT.1
+          pEXT.2 =~ 1*EXT.2; EXT.2 ~ 0; EXT.2 ~~ EXT.2; pEXT.2 ~~ 0*pEXT.2
+          pEXT.3 =~ 1*EXT.3; EXT.3 ~ 0; EXT.3 ~~ EXT.3; pEXT.3 ~~ 0*pEXT.3
+          pEXT.4 =~ 1*EXT.4; EXT.4 ~ 0; EXT.4 ~~ EXT.4; pEXT.4 ~~ 0*pEXT.4
+          pEXT.5 =~ 1*EXT.5; EXT.5 ~ 0; EXT.5 ~~ EXT.5; pEXT.5 ~~ 0*pEXT.5
+          
+          # Residual Cross-Construct Covariances
+          VS.1 ~~ EXT.1
+          VS.2 ~~ EXT.2
+          VS.3 ~~ EXT.3
+          VS.4 ~~ EXT.4
+          VS.5 ~~ EXT.5
+         
+          # Regressions Between Adjacent Observations
+          pVS.2 ~ 1*pVS.1
+          pVS.3 ~ 1*pVS.2
+          pVS.4 ~ 1*pVS.3
+          pVS.5 ~ 1*pVS.4
+         
+          pEXT.2 ~ 1*pEXT.1
+          pEXT.3 ~ 1*pEXT.2
+          pEXT.4 ~ 1*pEXT.3
+          pEXT.5 ~ 1*pEXT.4
+        
+          # Define Change Latent Variables
+          dVS.21 =~ 1*pVS.2; dVS.21 ~~ 0*dVS.21
+          dVS.32 =~ 1*pVS.3; dVS.32 ~~ 0*dVS.32
+          dVS.43 =~ 1*pVS.4; dVS.43 ~~ 0*dVS.43
+          dVS.54 =~ 1*pVS.5; dVS.54 ~~ 0*dVS.54
+         
+          dEXT.21 =~ 1*pEXT.2; dEXT.21 ~~ 0*dEXT.21
+          dEXT.32 =~ 1*pEXT.3; dEXT.32 ~~ 0*dEXT.32
+          dEXT.43 =~ 1*pEXT.4; dEXT.43 ~~ 0*dEXT.43
+          dEXT.54 =~ 1*pEXT.5; dEXT.54 ~~ 0*dEXT.54
+         
+          # Define Within- and Between Construct Proportional Regressions
+          dVS.21 ~ beta.V*pVS.1 + beta.VE*pEXT.1
+          dVS.32 ~ beta.V*pVS.2 + beta.VE*pEXT.2
+          dVS.43 ~ beta.V*pVS.3 + beta.VE*pEXT.3
+          dVS.54 ~ beta.V*pVS.4 + beta.VE*pEXT.4
+          
+          dEXT.21 ~ beta.E*pEXT.1 + beta.EV*pVS.1
+          dEXT.32 ~ beta.E*pEXT.2 + beta.EV*pVS.2
+          dEXT.43 ~ beta.E*pEXT.3 + beta.EV*pVS.3
+          dEXT.54 ~ beta.E*pEXT.4 + beta.EV*pVS.4
+        
+          # Define Intercept and Slope
+          int.V =~ 1*pVS.1
+          slp.V =~ 1*dVS.21 + 1*dVS.32 + 1*dVS.43 + 1*dVS.54
+        
+          int.V ~ 1
+          slp.V ~ 1
+          int.V ~~ int.V + slp.V + int.E + slp.E
+          slp.V ~~ slp.V + int.E + slp.E
+         
+          int.E =~ 1*pEXT.1
+          slp.E =~ 1*dEXT.21 + 1*dEXT.32 + 1*dEXT.43 + 1*dEXT.54
+        
+          int.E ~ 1
+          slp.E ~ 1
+          int.E ~~ int.E + slp.E
+          slp.E ~~ slp.E
+'
+bLCSpt.fit = sem(bLCSpt, data=ABCD, missing='ML')
+summary(bLCSpt.fit)
+```
+

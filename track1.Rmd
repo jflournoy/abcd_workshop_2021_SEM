@@ -577,9 +577,13 @@ Notice we use the function `growth` now. This sets `lavaa` defaults to be approp
 ### Plotting
 
 ```{r}
-ggplot(as.data.frame(predict(LCM_VSlin_fit))) + 
-  geom_abline(aes(intercept = int, slope = slp)) + 
-  coo
+pred_data <- as.data.frame(lavPredict(LCM_VSlin_fit, type = 'yhat')) %>%
+  mutate(id = 1:n()) %>%
+  pivot_longer(cols = 1:5) %>%
+  extract(name, c('var', 'wave'), '(EXT)\\.(\\d+)')
+
+ggplot(pred_data) + 
+  geom_line(aes(x = wave, y = value, group = id), alpha = .1)
 ```
 
 ## Constrained latent growth models
